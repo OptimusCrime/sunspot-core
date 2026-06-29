@@ -1,0 +1,17 @@
+name: sunspot-core-clean-packages
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  clean-packages:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clean backend container packages
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: sunspot-core/sunspot-core
+          package-type: 'container'
+          min-versions-to-keep: 3
+          token: ${{ secrets.REGISTRY_TOKEN }}

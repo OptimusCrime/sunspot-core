@@ -1,0 +1,26 @@
+name: sunspot-core-build
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      ##############################################################
+      # Workflow setup
+      ##############################################################
+
+      - name: Git Checkout
+        uses: actions/checkout@v6
+
+      - name: Build and publish go to Registry
+        uses: elgohr/Publish-Docker-Github-Action@v5
+        with:
+          registry: https://ghcr.io
+          name: optimuscrime/sunspot-core/sunspot-core
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+          dockerfile: Dockerfile
+          tags: "latest,${{ env.RELEASE_VERSION }}"
