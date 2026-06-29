@@ -110,7 +110,31 @@ func DayConditions(date time.Time, latDeg, lonDeg float64, domIndex, dtmIndex *T
 		})
 	}
 
-	return conditions, nil
+	return mergeShortShade(conditions), nil
+}
+
+// mergeShortShade reclassifies consecutive shade runs shorter than
+// MinShadeDuration as sun, so transient dips don't pollute the output.
+func mergeShortShade(conditions []Condition) []Condition {
+	i := 0
+	for i < len(conditions) {
+		if conditions[i].InSun {
+			i++
+			continue
+		}
+		j := i
+		for j < len(conditions) && !conditions[j].InSun {
+			j++
+		}
+		if time.Duration(j-i)*time.Minute < MinShadeDuration {
+			for k := i; k < j; k++ {
+				conditions[k].InSun = true
+				conditions[k].BlockedBy = nil
+			}
+		}
+		i = j
+	}
+	return conditions
 }
 
 // castRay marches from (e, n, height) toward the sun and returns the first
@@ -169,6 +193,11 @@ func castRay(
 // The step at distance d is max(1 m, d × stepGrowth), giving 1 m resolution
 // up to 50 m and coarser sampling beyond (e.g. ~10 m at 500 m).
 const stepGrowth = 0.02
+
+// MinShadeDuration is the shortest shade period that is reported as actual shade.
+// Consecutive shade runs shorter than this are reclassified as sun, since they
+// are likely noise from ray-casting at grazing angles or narrow obstacles.
+const MinShadeDuration = 10 * time.Minute
 
 // ErrOutOfCoverage is returned when the query coordinate falls outside all
 // loaded tiles.
