@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
-	"sync"
 
 	"github.com/optimuscrime/sunspot-core/internal/dataset"
 	"github.com/optimuscrime/sunspot-core/internal/geotiff"
@@ -18,10 +17,13 @@ type tileKey struct{ col, row int }
 // TileIndex provides O(1) coordinate → elevation lookups across a set of
 // same-type tiles (all DOM or all DTM — never mixed).
 //
-// Pixel data is loaded from disk lazily on first access and kept in memory
-// permanently after that.  The index is safe for concurrent use.
+// Pixel data is loaded from disk lazily on first access, via a shared
+// TileCache. The cache bounds total resident pixel memory, so tiles may be
+// evicted and re-read from disk between accesses.  The index is safe for
+// concurrent use.
 type TileIndex struct {
 	cells map[tileKey]*indexCell
+	cache *TileCache
 
 	// stepE / stepN are the tile width and height in metres.
 	// Derived once at build time from the first tile.
@@ -29,13 +31,9 @@ type TileIndex struct {
 	stepN float64
 }
 
-// indexCell holds one tile and ensures its pixels are loaded at most once,
-// even under concurrent access.
+// indexCell holds one tile's metadata (header info, not pixels).
 type indexCell struct {
-	entry  *dataset.TileEntry
-	once   sync.Once
-	pixels []float32 // set by once.Do; nil until first access
-	err    error
+	entry *dataset.TileEntry
 }
 
 // IndexStats describes how many tiles from each source dataset were actually
@@ -45,12 +43,13 @@ type IndexStats struct {
 	TotalCells    int
 }
 
-// NewTileIndex builds an index from a flat slice of tile entries.
+// NewTileIndex builds an index from a flat slice of tile entries, backed by
+// the given shared TileCache for pixel data.
 //
 // When two entries cover the same grid cell the first one wins, so callers
 // should pass higher-priority tiles (e.g. from newer surveys) first — see
 // dataset.MergeTiles.
-func NewTileIndex(entries []*dataset.TileEntry) (*TileIndex, *IndexStats, error) {
+func NewTileIndex(entries []*dataset.TileEntry, cache *TileCache) (*TileIndex, *IndexStats, error) {
 	if len(entries) == 0 {
 		return nil, nil, fmt.Errorf("no tiles provided")
 	}
@@ -61,6 +60,7 @@ func NewTileIndex(entries []*dataset.TileEntry) (*TileIndex, *IndexStats, error)
 
 	idx := &TileIndex{
 		cells: make(map[tileKey]*indexCell, len(entries)),
+		cache: cache,
 		stepE: maxE - minE,
 		stepN: maxN - minN,
 	}
@@ -89,12 +89,12 @@ func (idx *TileIndex) ElevationAt(e, n float64) (float32, bool) {
 		return 0, false
 	}
 
-	pixels, err := cell.load()
+	t := cell.entry.Tile
+	pixels, err := idx.cache.Pixels(t.Path)
 	if err != nil || pixels == nil {
 		return 0, false
 	}
 
-	t := cell.entry.Tile
 	col := int((e - t.Georef.OriginE) / t.Georef.PixelWidth)
 	row := int((t.Georef.OriginN - n) / t.Georef.PixelHeight)
 	if col < 0 || col >= t.Width || row < 0 || row >= t.Height {
@@ -102,19 +102,6 @@ func (idx *TileIndex) ElevationAt(e, n float64) (float32, bool) {
 	}
 
 	return pixels[row*t.Width+col], true
-}
-
-// load returns the pixel slice for this cell, loading from disk on first call.
-// Subsequent calls return the cached result immediately.
-func (cell *indexCell) load() ([]float32, error) {
-	cell.once.Do(func() {
-		if err := cell.entry.Tile.LoadPixels(); err != nil {
-			cell.err = err
-			return
-		}
-		cell.pixels = cell.entry.Tile.Pixels
-	})
-	return cell.pixels, cell.err
 }
 
 // keyForTile computes the grid key for a tile using its origin corner.

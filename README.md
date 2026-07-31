@@ -68,10 +68,16 @@ The response groups consecutive same-state minutes into segments and returns tot
 
 The server is configured entirely through environment variables:
 
-| Variable   | Default | Description                                              |
-|------------|---------|----------------------------------------------------------|
-| `PORT`     | `8080`  | TCP port the HTTP server listens on                      |
-| `DATA_DIR` | —       | **Required.** Path to the directory containing datasets  |
+| Variable          | Default | Description                                                                  |
+|-------------------|---------|-------------------------------------------------------------------------------|
+| `PORT`            | `8080`  | TCP port the HTTP server listens on                                          |
+| `DATA_DIR`        | —       | **Required.** Path to the directory containing datasets                      |
+| `TILE_CACHE_MB`   | `180`   | Max resident bytes (MB) of decoded tile pixel data, shared across DOM/DTM    |
+| `MEMORY_LIMIT_MB` | `220`   | Soft process memory limit (`GOMEMLIMIT`), a safety net above the tile cache  |
+
+### Memory behavior
+
+Tile headers (dimensions, georeferencing) for every dataset are loaded at startup — this is cheap regardless of dataset size. Pixel data is read from disk lazily, only for tiles an incoming query actually touches, and held in a shared LRU cache bounded by `TILE_CACHE_MB`. Once the budget is exceeded, the least-recently-used tile is evicted and re-read from disk on its next access — memory use stays bounded no matter how many distinct tiles get queried over the process lifetime, at the cost of occasional re-reads under scattered query patterns. The defaults comfortably fit a 256MB container/VM alongside the Go runtime and HTTP server.
 
 ## Data directory layout
 

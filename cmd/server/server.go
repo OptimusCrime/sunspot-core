@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"sort"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -19,6 +21,17 @@ import (
 	"github.com/optimuscrime/sunspot-core/internal/dataset"
 	"github.com/optimuscrime/sunspot-core/internal/shadow"
 )
+
+// defaultTileCacheMB is the default budget for resident, decoded tile pixel
+// data (shared across DOM and DTM). Chosen to comfortably fit a 256MB
+// container/VM alongside the Go runtime, HTTP server, and GC headroom.
+const defaultTileCacheMB = 180
+
+// defaultMemoryLimitMB is the default soft memory limit (GOMEMLIMIT) for the
+// whole process. It acts as a safety net on top of the tile cache budget,
+// making the Go GC collect more aggressively if total memory approaches this
+// ceiling for any reason.
+const defaultMemoryLimitMB = 220
 
 func main() {
 	port := os.Getenv("PORT")
@@ -32,8 +45,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	tileCacheMB := envInt("TILE_CACHE_MB", defaultTileCacheMB)
+	memoryLimitMB := envInt("MEMORY_LIMIT_MB", defaultMemoryLimitMB)
+
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+
+	debug.SetMemoryLimit(int64(memoryLimitMB) * 1024 * 1024)
+	slog.Info("memory limits configured", "tile_cache_mb", tileCacheMB, "memory_limit_mb", memoryLimitMB)
 
 	slog.Info("loading datasets", "dir", dataDir)
 	datasets, err := dataset.Discover(dataDir, dataset.LoadOptions{LoadPixels: false})
@@ -49,7 +68,8 @@ func main() {
 	printDatasets(datasets)
 
 	slog.Info("building tile indices")
-	domIndex, dtmIndex, err := buildIndices(datasets)
+	tileCache := shadow.NewTileCache(int64(tileCacheMB) * 1024 * 1024)
+	domIndex, dtmIndex, err := buildIndices(datasets, tileCache)
 	if err != nil {
 		slog.Error("build indices", "err", err)
 		os.Exit(1)
@@ -96,16 +116,16 @@ func main() {
 	}
 }
 
-func buildIndices(datasets []*dataset.Dataset) (*shadow.TileIndex, *shadow.TileIndex, error) {
+func buildIndices(datasets []*dataset.Dataset, cache *shadow.TileCache) (*shadow.TileIndex, *shadow.TileIndex, error) {
 	domEntries := dataset.MergeTiles(datasets, dataset.DOM)
 	dtmEntries := dataset.MergeTiles(datasets, dataset.DTM)
 
-	domIndex, domStats, err := shadow.NewTileIndex(domEntries)
+	domIndex, domStats, err := shadow.NewTileIndex(domEntries, cache)
 	if err != nil {
 		return nil, nil, fmt.Errorf("DOM index: %w", err)
 	}
 
-	dtmIndex, dtmStats, err := shadow.NewTileIndex(dtmEntries)
+	dtmIndex, dtmStats, err := shadow.NewTileIndex(dtmEntries, cache)
 	if err != nil {
 		return nil, nil, fmt.Errorf("DTM index: %w", err)
 	}
@@ -141,4 +161,19 @@ func sortedByPriority(datasets []*dataset.Dataset) []*dataset.Dataset {
 		return sorted[i].Name > sorted[j].Name
 	})
 	return sorted
+}
+
+// envInt reads an integer environment variable, falling back to def if it
+// is unset or not a valid integer.
+func envInt(name string, def int) int {
+	v := os.Getenv(name)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		slog.Warn("invalid integer env var, using default", "var", name, "value", v, "default", def)
+		return def
+	}
+	return n
 }

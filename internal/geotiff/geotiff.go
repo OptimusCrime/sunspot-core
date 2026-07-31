@@ -58,20 +58,6 @@ type Tile struct {
 	Stats *Statistics
 }
 
-// LoadPixels reads the full float32 pixel array into t.Pixels.
-// It is a no-op if pixels are already loaded.
-func (t *Tile) LoadPixels() error {
-	if t.Pixels != nil {
-		return nil
-	}
-	full, err := Read(t.Path)
-	if err != nil {
-		return err
-	}
-	t.Pixels = full.Pixels
-	return nil
-}
-
 func (t *Tile) BoundsE() (min, max float64) {
 	return t.Georef.OriginE, t.Georef.OriginE + float64(t.Width)*t.Georef.PixelWidth
 }
