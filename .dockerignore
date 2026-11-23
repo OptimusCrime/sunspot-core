@@ -1,0 +1,6 @@
+# Elevation datasets (~7.5 GB) are mounted at runtime via DATA_DIR, never baked in.
+data
+.git
+.github
+.idea
+**/.DS_Store
